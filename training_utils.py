@@ -200,6 +200,29 @@ def evaluate(model, data_generator, batch_size, t0, mc_itr=50, real=False):
 
         return rmse_z0, rmse_z0_sd, cprs_z0, rmse_x, rmse_x_sd, cprs_x
 
+def evaluate_stub(model, data_generator, batch_size, t0, real=False):
+    with torch.no_grad():
+
+        for chunk in range(min(20, data_generator.train_size // batch_size)):
+            data = data_generator.get_split("train", batch_size, chunk)
+
+            x = data["measurements"][:t0]
+            a = data["actions"][:t0]
+            mask = data["masks"][:t0]
+
+            if real:
+                s = data["statics"][:t0]
+
+            if real:
+                a_in = torch.cat([a, s], dim=-1)
+                encoder_out = model.encoder(x, a_in, mask)
+                z0_hat = encoder_out[0]
+                _, _ = model.decoder(z0_hat, data["actions"], data["statics"])
+            else:
+                encoder_out = model.encoder(x, a, mask)
+                z0_hat = encoder_out[0]
+                _, _ = model.decoder(z0_hat, data["actions"],chunk)
+    return
 
 def evaluate_horizon(model, data_generator, batch_size, t0, mc_itr=10, real=False):
     with torch.no_grad():

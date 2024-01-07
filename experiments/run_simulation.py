@@ -26,6 +26,7 @@ def run(
     encoder_output_dim=None,
     ablate=False,
     arg_itr=None,
+    dcode=False,
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -110,6 +111,7 @@ def run(
             method=ode_method,
             device=device,
             ablate=ablate,
+            dcode=dcode,
         )
 
         vi = model.VariationalInference(encoder, decoder, prior_log_pdf=prior, elbo=elbo)
@@ -174,6 +176,7 @@ if __name__ == "__main__":
     parser.add_argument("--encoder_output_dim", default=None, type=int)
     parser.add_argument("--data_path", default="data/datafile_dose_exp.pkl", type=str)
     parser.add_argument("--ablate", default=False, type=bool)
+    parser.add_argument("--dcode", default=False, type=bool)
 
     args = parser.parse_args()
     method = args.method
@@ -190,6 +193,7 @@ if __name__ == "__main__":
     elbo = args.elbo == "y"
     encoder_output_dim = args.encoder_output_dim
     arg_itr = args.arg_itr
+    dcode = args.dcode
 
     if dc == "dim8":
         data_config = sim_config.dim8_config
@@ -224,4 +228,5 @@ if __name__ == "__main__":
         encoder_output_dim,
         args.ablate,
         arg_itr,
+        dcode,
     )

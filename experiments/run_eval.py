@@ -26,6 +26,9 @@ def run(
     ablate=False,
     arg_itr=None,
     result_path=None,
+    extract_path=None,
+    dcode=False,
+    step_size=None,
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -38,7 +41,8 @@ def run(
     latent_dim = data_config.latent_dim
     action_dim = data_config.action_dim
     t_max = data_config.t_max
-    step_size = data_config.step_size
+    if not step_size:
+        step_size = data_config.step_size
     output_sigma = data_config.output_sigma
     sparsity = data_config.sparsity
 
@@ -95,6 +99,8 @@ def run(
         method=ode_method,
         device=device,
         ablate=ablate,
+        extract_path=extract_path,
+        dcode=dcode,
     )
 
     vi = model.VariationalInference(encoder, decoder, prior_log_pdf=prior, elbo=elbo)
@@ -105,10 +111,13 @@ def run(
     best_loss = best_model["best_loss"]
     print("Overall best loss: {:.6f}".format(best_loss))
 
-    res = training_utils.evaluate_horizon(vi, dg, batch_size, eval_config.t0)
+    if not extract_path:
+        res = training_utils.evaluate_horizon(vi, dg, batch_size, eval_config.t0)
 
-    with open(result_path, "wb") as f:
-        pickle.dump(res, f)
+        with open(result_path, "wb") as f:
+            pickle.dump(res, f)
+    else:
+        training_utils.evaluate_stub(vi, dg, batch_size, eval_config.t0)
 
 
 if __name__ == "__main__":
@@ -132,6 +141,9 @@ if __name__ == "__main__":
     parser.add_argument("--encoder_output_dim", default=None, type=int)
     parser.add_argument("--data_path", default="data/datafile_dose_exp.pkl", type=str)
     parser.add_argument("--ablate", default=False, type=bool)
+    parser.add_argument("--extract_path",default=None, type=str)
+    parser.add_argument("--dcode",default=False, type=bool)
+    parser.add_argument("--step_size",default=None, type=float)
 
     args = parser.parse_args()
     method = args.method
@@ -148,6 +160,9 @@ if __name__ == "__main__":
     elbo = args.elbo == "y"
     encoder_output_dim = args.encoder_output_dim
     arg_itr = args.arg_itr
+    extract_path = args.extract_path
+    dcode = args.dcode
+    step_size = args.step_size
 
     assert eval_only
 
@@ -184,4 +199,7 @@ if __name__ == "__main__":
         args.ablate,
         arg_itr,
         args.result_path,
+        extract_path,
+        dcode,
+        step_size,
     )

@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torch.distributions as dist
 import torch.nn as nn
-
+import pickle
 # from torchdiffeq import odeint_adjoint as odeint
 from torchdiffeq import odeint as dto
 
@@ -13,6 +13,8 @@ from torchdiffeq import odeint as dto
 import flow as flows
 import sim_config
 from global_config import DTYPE, get_device
+from _program import _Program
+import math
 
 
 class GaussianReparam:
@@ -444,7 +446,7 @@ class EncoderLSTM(nn.Module, GaussianReparam):
 
 
 class RocheODE(nn.Module):
-    def __init__(self, latent_dim, action_dim, t_max, step_size, ablate=False, device=None, dtype=DTYPE):
+    def __init__(self, latent_dim, action_dim, t_max, step_size, ablate=False, device=None, dtype=DTYPE, dcode=False):
         super().__init__()
 
         assert action_dim == 1
@@ -454,6 +456,7 @@ class RocheODE(nn.Module):
         self.expert_dim = int(4)
         self.ml_dim = self.latent_dim - self.expert_dim
         self.expanded = True if self.ml_dim > 0 else False
+        self.dcode = dcode
         self.ablate = ablate
 
         if device is None:
@@ -511,6 +514,35 @@ class RocheODE(nn.Module):
         return self.dosage * torch.sum(
             torch.exp(self.kel * (self.times - t) * (t >= self.times)) * (t >= self.times), dim=-1
         )
+    
+    def get_dcode_values(self,x,t):
+        Dose = self.dose_at_time(t)
+        x = torch.concatenate([x[:,0:4], torch.reshape(Dose,(Dose.shape[0],1)), x[:,4:]], axis=1)
+        time = torch.tensor([t])
+        time = time.repeat(Dose.shape[0],1)
+        x = torch.concatenate([x, time], axis=1)
+        results = []
+
+        X0 = x[:,0]
+        X1 = x[:,1]
+        X2 = x[:,2]
+        X3 = x[:,3]
+        X4 = x[:,4]
+        X5 = x[:,5]
+        X6 = x[:,6]
+        X7 = x[:,7]
+
+        z0 = torch.tanh(torch.tanh(0.05855823370805702*X4 + torch.tanh(0.02927911685402851*X4 - torch.tanh(torch.tanh(X2*torch.tanh(torch.tanh(X1*X2)))))))
+        z1 = torch.tanh(torch.tanh(X3)*torch.tanh(torch.tanh(torch.tanh(torch.tanh(-X3 + torch.tanh(torch.tanh(torch.tanh(torch.tanh(torch.tanh(X3)) + torch.tanh(torch.tanh(X5))))))))) + torch.tanh(-X5 - torch.tanh(X5)**2))
+        z0 = torch.reshape(z0,(z0.shape[0],1))
+        z1 = torch.reshape(z1,(z1.shape[0],1))
+
+        
+        results.append(z0)
+        results.append(z1)
+
+        results = torch.concatenate(results, axis = 1)
+        return results
 
     def forward(self, t, y):
         # y: B, D
@@ -549,7 +581,10 @@ class RocheODE(nn.Module):
             dxdt4 = -1.0 * Immunity * self.theta_2
 
         if self.expanded:
-            dmldt = self.ml_net(y)
+            if not self.dcode:
+                dmldt = self.ml_net(y)
+            else:
+                dmldt = self.get_dcode_values(y,t)
             return torch.cat([dxdt1[..., None], dxdt2[..., None], dxdt3[..., None], dxdt4[..., None], dmldt], dim=-1)
         else:
             return torch.stack([dxdt1, dxdt2, dxdt3, dxdt4], dim=-1)
@@ -1041,6 +1076,8 @@ class RocheExpertDecoder(nn.Module):
         ode_step_size=None,
         device=None,
         dtype=DTYPE,
+        extract_path=None,
+        dcode=False,
     ):
         super().__init__()
 
@@ -1052,6 +1089,8 @@ class RocheExpertDecoder(nn.Module):
         self.step_size = step_size
         self.roche = roche
         self.ablate = ablate
+        self.extract_path = extract_path
+        self.dcode = dcode
         if roche:
             if latent_dim == 4:
                 self.model_name = "ExpertDecoder"
@@ -1105,17 +1144,35 @@ class RocheExpertDecoder(nn.Module):
         # nn.Tanh()
         # ).to(self.device)
         if roche:
-            self.ode = RocheODE(latent_dim, action_dim, t_max, step_size, ablate=self.ablate, device=device)
+            self.ode = RocheODE(latent_dim, action_dim, t_max, step_size, ablate=self.ablate, device=device, dcode=self.dcode)
         else:
             self.ode = NeuralODE(latent_dim, action_dim, t_max, step_size, device)
 
-    def forward(self, init, a):
+    def forward(self, init, a, chunk=None):
         self.ode.set_action(a)
         # solve ode
         # h = ode_solver.odesolve(self.ode, init, self.options)
         h = dto(
             self.ode, init, self.t, rtol=self.options["rtol"], atol=self.options["atol"], method=self.options["method"]
         )
+
+        if self.extract_path:
+            t_vector = np.array(self.t)
+            t_vector = t_vector.reshape((t_vector.shape[0],1,1))
+            t_vector = np.repeat(t_vector, h.shape[1], axis=1)
+            h_numpy = h.numpy()
+            all_doses = []
+            for time in self.t:
+                dosage = torch.max(a[..., 0], dim=0)[0]
+                dose_i = dosage * torch.sum(
+                    torch.exp(self.ode.kel * (self.ode.times - time) * (time >= self.ode.times)) * (time >= self.ode.times), dim=-1
+                )
+                all_doses.append(dose_i.numpy())
+            dose_array = np.array(all_doses)
+            dose_array = np.reshape(dose_array,(dose_array.shape[0], dose_array.shape[1], 1))
+            h_numpy = np.concatenate([h_numpy,dose_array,t_vector], axis = -1)
+            with open(f"{self.extract_path}h_{chunk}_train.pkl", "wb") as f:
+                pickle.dump(h_numpy, f)
         # generate output
         x_hat = self.output_function(h)
         return x_hat, h

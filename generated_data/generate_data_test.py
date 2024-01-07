@@ -2,6 +2,8 @@ import pickle
 
 import numpy as np
 import torch
+import sys
+sys.path.append("/Users/gcohn/Documents/Hybrid-ODE-NeurIPS-2021")
 
 import dataloader
 import sim_config
